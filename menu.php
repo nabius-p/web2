@@ -1,40 +1,42 @@
 <?php
 session_start();
-include('db.php');
+include 'db.php';
 
-// Khởi tạo cart
-if (!isset($_SESSION['cart'])) {
-    $_SESSION['cart'] = [];
-}
-
-// Bắt buộc đã chọn bàn
-if (!isset($_SESSION['table_number'], $_SESSION['customer_name'], $_SESSION['customer_email'])) {
+// 1) Ensure we have an invoice in progress
+if (!isset($_SESSION['invoice_id'])) {
     header('Location: select_table.php');
     exit();
 }
 
-// Xác định category (nếu có)
+// Initialize cart if needed
+if (!isset($_SESSION['cart'])) {
+    $_SESSION['cart'] = [];
+}
+
+// Grab category filter
 $selected = $_GET['category'] ?? '';
 
-// === 1) XỬ LÝ REMOVE ===
+// === 2) HANDLE REMOVE ===
 if (isset($_GET['remove_item'])) {
-    // Nếu bạn dùng index làm key:
-    $idx = intval($_GET['remove_item']);
-    if (isset($_SESSION['cart'][$idx])) {
-        unset($_SESSION['cart'][$idx]);
-        $_SESSION['cart'] = array_values($_SESSION['cart']);
+    $remove_id = intval($_GET['remove_item']);
+    foreach ($_SESSION['cart'] as $i => $it) {
+        if ($it['item_id'] === $remove_id) {
+            unset($_SESSION['cart'][$i]);
+            break;
+        }
     }
+    $_SESSION['cart'] = array_values($_SESSION['cart']);
     header("Location: menu.php?category=" . urlencode($selected) . "#menu-items");
     exit();
 }
 
-// === 2) XỬ LÝ UPDATE ===
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_quantity'], $_POST['item_name'], $_POST['quantity'])) {
-    $name = $_POST['item_name'];
-    $qty  = max(1, intval($_POST['quantity']));
+// === 3) HANDLE UPDATE QUANTITY ===
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_item_id'], $_POST['quantity'])) {
+    $uid = intval($_POST['update_item_id']);
+    $newQty = max(1, intval($_POST['quantity']));
     foreach ($_SESSION['cart'] as &$it) {
-        if ($it['name'] === $name) {
-            $it['quantity'] = $qty;
+        if ($it['item_id'] === $uid) {
+            $it['quantity'] = $newQty;
             break;
         }
     }
@@ -43,32 +45,101 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_quantity'], $_
     exit();
 }
 
-// === 3) XỬ LÝ ADD (dấu +) ===
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['item_name'], $_POST['price'], $_POST['quantity']) && !isset($_POST['update_quantity'])) {
-    $name  = $_POST['item_name'];
-    $price = floatval($_POST['price']);
-    $qty   = max(1, intval($_POST['quantity']));
-    $found = false;
-    foreach ($_SESSION['cart'] as &$it) {
-        if ($it['name'] === $name) {
-            $it['quantity'] += $qty;
-            $found = true;
-            break;
+// === 4) HANDLE ADD TO CART ===
+if ($_SERVER['REQUEST_METHOD'] === 'POST'
+    && isset($_POST['add_item_id'], $_POST['quantity'])
+    && !isset($_POST['update_item_id'])
+) {
+    $item_id = intval($_POST['add_item_id']);
+    $qty     = max(1, intval($_POST['quantity']));
+
+    // Fetch item details
+    $stmt = $conn->prepare("SELECT name, price FROM items WHERE id = ?");
+    $stmt->bind_param("i", $item_id);
+    $stmt->execute();
+    $itm = $stmt->get_result()->fetch_assoc();
+
+    if ($itm) {
+        $found = false;
+        foreach ($_SESSION['cart'] as &$row) {
+            if ($row['item_id'] === $item_id) {
+                $row['quantity'] += $qty;
+                $found = true;
+                break;
+            }
+        }
+        unset($row);
+        if (!$found) {
+            $_SESSION['cart'][] = [
+                'item_id'  => $item_id,
+                'name'     => $itm['name'],
+                'price'    => (float)$itm['price'],
+                'quantity' => $qty
+            ];
         }
     }
-    unset($it);
-    if (!$found) {
-        $_SESSION['cart'][] = ['name'=>$name, 'price'=>$price, 'quantity'=>$qty];
-    }
+
     header("Location: menu.php?category=" . urlencode($selected) . "#menu-items");
     exit();
 }
 
-// Tính tổng để hiển thị trong giỏ
+// === 5) HANDLE CHECKOUT ===
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action']==='checkout') {
+    $invoice_id = $_SESSION['invoice_id'];
+    $total = 0;
+
+    // Remove old items if re-checkout
+    $conn->query("DELETE FROM invoice_items WHERE invoice_id={$invoice_id}");
+
+    $ins = $conn->prepare("
+      INSERT INTO invoice_items (invoice_id, item_id, quantity, price)
+      VALUES (?, ?, ?, ?)
+    ");
+    foreach ($_SESSION['cart'] as $it) {
+        $ins->bind_param("iiid",
+            $invoice_id,
+            $it['item_id'],
+            $it['quantity'],
+            $it['price']
+        );
+        $ins->execute();
+        $total += $it['price'] * $it['quantity'];
+    }
+
+    // Update invoice total
+    $upd = $conn->prepare("UPDATE invoices SET total_amount = ? WHERE id = ?");
+    $upd->bind_param("di", $total, $invoice_id);
+    $upd->execute();
+
+    // Redirect to checkout/confirmation
+    header("Location: order.php");
+    exit();
+}
+
+// === 6) Calculate cart total for display ===
 $total_price = 0;
 foreach ($_SESSION['cart'] as $ci) {
     $total_price += $ci['price'] * $ci['quantity'];
 }
+
+// === 7) Fetch menu items ===
+if ($selected) {
+    $stmt = $conn->prepare("
+      SELECT id, name, price, category
+      FROM items
+      WHERE category = ?
+      ORDER BY name
+    ");
+    $stmt->bind_param("s", $selected);
+} else {
+    $stmt = $conn->prepare("
+      SELECT id, name, price, category
+      FROM items
+      ORDER BY category, name
+    ");
+}
+$stmt->execute();
+$menu_items = $stmt->get_result();
 ?>
  
 
@@ -206,34 +277,47 @@ foreach ($_SESSION['cart'] as $ci) {
                     <div class="tab-content">
                         <div id="tab-1" class="tab-pane fade show p-0 active">
                             <div class="row g-4">
+
                                 <!-- Content for Hotpot -->
                                 <?php
                                 // Fetch and display items for Hotpot
                                 $sql = "SELECT * FROM items WHERE category = 'Hotpot'";
                                 $result = $conn->query($sql);
                                 while($item = $result->fetch_assoc()) {
-                                    echo "
-                                    <div class='col-lg-6'>
-                                        <div class='d-flex align-items-center'>
-                                            <img class='flex-shrink-0 img-fluid rounded' src='" . $item['image_url'] . "' alt='' style='width: 150px;'>
-                                            <div class='w-100 d-flex flex-column text-start ps-4'>
-                                                <h5 class='d-flex justify-content-between border-bottom pb-2'>
-                                                    <span>" . $item['name'] . "</span>
-                                                    <span class='text-primary'>" . number_format($item['price'], 0, ',', '.') . " ₫</span>
-                                                </h5>
-                                                <form action='menu.php' method='post'>
-                                                    <input type='hidden' name='item_name' value='" . $item['name'] . "'>
-                                                    <input type='hidden' name='price' value='" . $item['price'] . "'>
-                                                    <input type='number' name='quantity' value='1' min='1' 
-                                                           class='form-control mb-2' style='width:70px;'>
+                                   ?>
+    <div class="col-lg-6">
+      <div class="d-flex align-items-center">
+        <img class="flex-shrink-0 img-fluid rounded"
+             src="<?= htmlspecialchars($item['image_url']) ?>"
+             alt="" style="width:150px;">
+        <div class="w-100 d-flex flex-column text-start ps-4">
+          <h5 class="d-flex justify-content-between border-bottom pb-2">
+            <span><?= htmlspecialchars($item['name']) ?></span>
+            <span class="text-primary">
+              <?= number_format($item['price'],0,',','.') ?> ₫
+            </span>
+          </h5>
 
-                                                    <button type='submit' class='btn btn-primary'>+</button>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>";
-                                }
-                                ?>
+          <!-- START Add-to-Cart Form -->
+          <form action="menu.php" method="post" class="d-flex align-items-center mt-2">
+            <!-- use item_id so PHP knows which item -->
+            <input type="hidden" name="add_item_id" value="<?= $item['id'] ?>">
+            <input type="number"
+                   name="quantity"
+                   value="1"
+                   min="1"
+                   class="form-control me-2"
+                   style="width:70px;">
+            <button type="submit" class="btn btn-primary">+</button>
+          </form>
+          <!-- END Add-to-Cart Form -->
+
+        </div>
+      </div>
+    </div>
+    <?php
+}
+?>
                             </div>
                         </div>
                         <div id="tab-2" class="tab-pane fade show p-0">
@@ -244,27 +328,40 @@ foreach ($_SESSION['cart'] as $ci) {
                                 $sql = "SELECT * FROM items WHERE category = 'Meat'";
                                 $result = $conn->query($sql);
                                 while($item = $result->fetch_assoc()) {
-                                    echo "
-                                    <div class='col-lg-6'>
-                                        <div class='d-flex align-items-center'>
-                                            <img class='flex-shrink-0 img-fluid rounded' src='" . $item['image_url'] . "' alt='' style='width: 150px;'>
-                                            <div class='w-100 d-flex flex-column text-start ps-4'>
-                                                <h5 class='d-flex justify-content-between border-bottom pb-2'>
-                                                    <span>" . $item['name'] . "</span>
-                                                    <span class='text-primary'>" . number_format($item['price'], 0, ',', '.') . " ₫</span>
-                                                </h5>
-                                                <form action='menu.php' method='post'>
-                                                    <input type='hidden' name='item_name' value='" . $item['name'] . "'>
-                                                    <input type='hidden' name='price' value='" . $item['price'] . "'>
-                                                     <input type='number' name='quantity' value='1' min='1' 
-                                                           class='form-control mb-2' style='width:70px;'>
-                                                    <button type='submit' class='btn btn-primary'>+</button>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>";
-                                }
-                                ?>
+                                   ?>
+    <div class="col-lg-6">
+      <div class="d-flex align-items-center">
+        <img class="flex-shrink-0 img-fluid rounded"
+             src="<?= htmlspecialchars($item['image_url']) ?>"
+             alt="" style="width:150px;">
+        <div class="w-100 d-flex flex-column text-start ps-4">
+          <h5 class="d-flex justify-content-between border-bottom pb-2">
+            <span><?= htmlspecialchars($item['name']) ?></span>
+            <span class="text-primary">
+              <?= number_format($item['price'],0,',','.') ?> ₫
+            </span>
+          </h5>
+
+          <!-- START Add-to-Cart Form -->
+          <form action="menu.php" method="post" class="d-flex align-items-center mt-2">
+            <!-- use item_id so PHP knows which item -->
+            <input type="hidden" name="add_item_id" value="<?= $item['id'] ?>">
+            <input type="number"
+                   name="quantity"
+                   value="1"
+                   min="1"
+                   class="form-control me-2"
+                   style="width:70px;">
+            <button type="submit" class="btn btn-primary">+</button>
+          </form>
+          <!-- END Add-to-Cart Form -->
+
+        </div>
+      </div>
+    </div>
+    <?php
+}
+?>
                             </div>
                         </div>
                         <div id="tab-3" class="tab-pane fade show p-0">
@@ -275,27 +372,40 @@ foreach ($_SESSION['cart'] as $ci) {
                                 $sql = "SELECT * FROM items WHERE category = 'Viscera'";
                                 $result = $conn->query($sql);
                                 while($item = $result->fetch_assoc()) {
-                                    echo "
-                                    <div class='col-lg-6'>
-                                        <div class='d-flex align-items-center'>
-                                            <img class='flex-shrink-0 img-fluid rounded' src='" . $item['image_url'] . "' alt='' style='width: 150px;'>
-                                            <div class='w-100 d-flex flex-column text-start ps-4'>
-                                                <h5 class='d-flex justify-content-between border-bottom pb-2'>
-                                                    <span>" . $item['name'] . "</span>
-                                                    <span class='text-primary'>" . number_format($item['price'], 0, ',', '.') . " ₫</span>
-                                                </h5>
-                                                <form action='menu.php' method='post'>
-                                                    <input type='hidden' name='item_name' value='" . $item['name'] . "'>
-                                                    <input type='hidden' name='price' value='" . $item['price'] . "'>
-                                                     <input type='number' name='quantity' value='1' min='1' 
-                                                           class='form-control mb-2' style='width:70px;'>
-                                                    <button type='submit' class='btn btn-primary'>+</button>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>";
-                                }
-                                ?>
+                                    ?>
+    <div class="col-lg-6">
+      <div class="d-flex align-items-center">
+        <img class="flex-shrink-0 img-fluid rounded"
+             src="<?= htmlspecialchars($item['image_url']) ?>"
+             alt="" style="width:150px;">
+        <div class="w-100 d-flex flex-column text-start ps-4">
+          <h5 class="d-flex justify-content-between border-bottom pb-2">
+            <span><?= htmlspecialchars($item['name']) ?></span>
+            <span class="text-primary">
+              <?= number_format($item['price'],0,',','.') ?> ₫
+            </span>
+          </h5>
+
+          <!-- START Add-to-Cart Form -->
+          <form action="menu.php" method="post" class="d-flex align-items-center mt-2">
+            <!-- use item_id so PHP knows which item -->
+            <input type="hidden" name="add_item_id" value="<?= $item['id'] ?>">
+            <input type="number"
+                   name="quantity"
+                   value="1"
+                   min="1"
+                   class="form-control me-2"
+                   style="width:70px;">
+            <button type="submit" class="btn btn-primary">+</button>
+          </form>
+          <!-- END Add-to-Cart Form -->
+
+        </div>
+      </div>
+    </div>
+    <?php
+}
+?>
                             </div>
                         </div>
                         <div id="tab-4" class="tab-pane fade show p-0">
@@ -306,27 +416,40 @@ foreach ($_SESSION['cart'] as $ci) {
                                 $sql = "SELECT * FROM items WHERE category = 'Sea Food'";
                                 $result = $conn->query($sql);
                                 while($item = $result->fetch_assoc()) {
-                                    echo "
-                                    <div class='col-lg-6'>
-                                        <div class='d-flex align-items-center'>
-                                            <img class='flex-shrink-0 img-fluid rounded' src='" . $item['image_url'] . "' alt='' style='width: 150px;'>
-                                            <div class='w-100 d-flex flex-column text-start ps-4'>
-                                                <h5 class='d-flex justify-content-between border-bottom pb-2'>
-                                                    <span>" . $item['name'] . "</span>
-                                                    <span class='text-primary'>" . number_format($item['price'], 0, ',', '.') . " ₫</span>
-                                                </h5>
-                                                <form action='menu.php' method='post'>
-                                                    <input type='hidden' name='item_name' value='" . $item['name'] . "'>
-                                                    <input type='hidden' name='price' value='" . $item['price'] . "'>
-                                                     <input type='number' name='quantity' value='1' min='1' 
-                                                           class='form-control mb-2' style='width:70px;'>
-                                                    <button type='submit' class='btn btn-primary'>+</button>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>";
-                                }
-                                ?>
+                                  ?>
+    <div class="col-lg-6">
+      <div class="d-flex align-items-center">
+        <img class="flex-shrink-0 img-fluid rounded"
+             src="<?= htmlspecialchars($item['image_url']) ?>"
+             alt="" style="width:150px;">
+        <div class="w-100 d-flex flex-column text-start ps-4">
+          <h5 class="d-flex justify-content-between border-bottom pb-2">
+            <span><?= htmlspecialchars($item['name']) ?></span>
+            <span class="text-primary">
+              <?= number_format($item['price'],0,',','.') ?> ₫
+            </span>
+          </h5>
+
+          <!-- START Add-to-Cart Form -->
+          <form action="menu.php" method="post" class="d-flex align-items-center mt-2">
+            <!-- use item_id so PHP knows which item -->
+            <input type="hidden" name="add_item_id" value="<?= $item['id'] ?>">
+            <input type="number"
+                   name="quantity"
+                   value="1"
+                   min="1"
+                   class="form-control me-2"
+                   style="width:70px;">
+            <button type="submit" class="btn btn-primary">+</button>
+          </form>
+          <!-- END Add-to-Cart Form -->
+
+        </div>
+      </div>
+    </div>
+    <?php
+}
+?>
                             </div>
                         </div>
                         <div id="tab-5" class="tab-pane fade show p-0">
@@ -337,27 +460,40 @@ foreach ($_SESSION['cart'] as $ci) {
                                 $sql = "SELECT * FROM items WHERE category = 'Hot pot balls'";
                                 $result = $conn->query($sql);
                                 while($item = $result->fetch_assoc()) {
-                                    echo "
-                                    <div class='col-lg-6'>
-                                        <div class='d-flex align-items-center'>
-                                            <img class='flex-shrink-0 img-fluid rounded' src='" . $item['image_url'] . "' alt='' style='width: 150px;'>
-                                            <div class='w-100 d-flex flex-column text-start ps-4'>
-                                                <h5 class='d-flex justify-content-between border-bottom pb-2'>
-                                                    <span>" . $item['name'] . "</span>
-                                                    <span class='text-primary'>" . number_format($item['price'], 0, ',', '.') . " ₫</span>
-                                                </h5>
-                                                <form action='menu.php' method='post'>
-                                                    <input type='hidden' name='item_name' value='" . $item['name'] . "'>
-                                                    <input type='hidden' name='price' value='" . $item['price'] . "'>
-                                                     <input type='number' name='quantity' value='1' min='1' 
-                                                           class='form-control mb-2' style='width:70px;'>
-                                                    <button type='submit' class='btn btn-primary'>+</button>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>";
-                                }
-                                ?>
+                                   ?>
+    <div class="col-lg-6">
+      <div class="d-flex align-items-center">
+        <img class="flex-shrink-0 img-fluid rounded"
+             src="<?= htmlspecialchars($item['image_url']) ?>"
+             alt="" style="width:150px;">
+        <div class="w-100 d-flex flex-column text-start ps-4">
+          <h5 class="d-flex justify-content-between border-bottom pb-2">
+            <span><?= htmlspecialchars($item['name']) ?></span>
+            <span class="text-primary">
+              <?= number_format($item['price'],0,',','.') ?> ₫
+            </span>
+          </h5>
+
+          <!-- START Add-to-Cart Form -->
+          <form action="menu.php" method="post" class="d-flex align-items-center mt-2">
+            <!-- use item_id so PHP knows which item -->
+            <input type="hidden" name="add_item_id" value="<?= $item['id'] ?>">
+            <input type="number"
+                   name="quantity"
+                   value="1"
+                   min="1"
+                   class="form-control me-2"
+                   style="width:70px;">
+            <button type="submit" class="btn btn-primary">+</button>
+          </form>
+          <!-- END Add-to-Cart Form -->
+
+        </div>
+      </div>
+    </div>
+    <?php
+}
+?>
                             </div>
                         </div>
                         <div id="tab-6" class="tab-pane fade show p-0">
@@ -368,27 +504,40 @@ foreach ($_SESSION['cart'] as $ci) {
                                 $sql = "SELECT * FROM items WHERE category = 'Vegetables & Mushrooms'";
                                 $result = $conn->query($sql);
                                 while($item = $result->fetch_assoc()) {
-                                    echo "
-                                    <div class='col-lg-6'>
-                                        <div class='d-flex align-items-center'>
-                                            <img class='flex-shrink-0 img-fluid rounded' src='" . $item['image_url'] . "' alt='' style='width: 150px;'>
-                                            <div class='w-100 d-flex flex-column text-start ps-4'>
-                                                <h5 class='d-flex justify-content-between border-bottom pb-2'>
-                                                    <span>" . $item['name'] . "</span>
-                                                    <span class='text-primary'>" . number_format($item['price'], 0, ',', '.') . " ₫</span>
-                                                </h5>
-                                                <form action='menu.php' method='post'>
-                                                    <input type='hidden' name='item_name' value='" . $item['name'] . "'>
-                                                    <input type='hidden' name='price' value='" . $item['price'] . "'>
-                                                     <input type='number' name='quantity' value='1' min='1' 
-                                                           class='form-control mb-2' style='width:70px;'>
-                                                    <button type='submit' class='btn btn-primary'>+</button>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>";
-                                }
-                                ?>
+                                   ?>
+    <div class="col-lg-6">
+      <div class="d-flex align-items-center">
+        <img class="flex-shrink-0 img-fluid rounded"
+             src="<?= htmlspecialchars($item['image_url']) ?>"
+             alt="" style="width:150px;">
+        <div class="w-100 d-flex flex-column text-start ps-4">
+          <h5 class="d-flex justify-content-between border-bottom pb-2">
+            <span><?= htmlspecialchars($item['name']) ?></span>
+            <span class="text-primary">
+              <?= number_format($item['price'],0,',','.') ?> ₫
+            </span>
+          </h5>
+
+          <!-- START Add-to-Cart Form -->
+          <form action="menu.php" method="post" class="d-flex align-items-center mt-2">
+            <!-- use item_id so PHP knows which item -->
+            <input type="hidden" name="add_item_id" value="<?= $item['id'] ?>">
+            <input type="number"
+                   name="quantity"
+                   value="1"
+                   min="1"
+                   class="form-control me-2"
+                   style="width:70px;">
+            <button type="submit" class="btn btn-primary">+</button>
+          </form>
+          <!-- END Add-to-Cart Form -->
+
+        </div>
+      </div>
+    </div>
+    <?php
+}
+?>
                             </div>
                         </div>
                         <div id="tab-7" class="tab-pane fade show p-0">
@@ -399,27 +548,40 @@ foreach ($_SESSION['cart'] as $ci) {
                                 $sql = "SELECT * FROM items WHERE category = 'Noodles'";
                                 $result = $conn->query($sql);
                                 while($item = $result->fetch_assoc()) {
-                                    echo "
-                                    <div class='col-lg-6'>
-                                        <div class='d-flex align-items-center'>
-                                            <img class='flex-shrink-0 img-fluid rounded' src='" . $item['image_url'] . "' alt='' style='width: 150px;'>
-                                            <div class='w-100 d-flex flex-column text-start ps-4'>
-                                                <h5 class='d-flex justify-content-between border-bottom pb-2'>
-                                                    <span>" . $item['name'] . "</span>
-                                                    <span class='text-primary'>" . number_format($item['price'], 0, ',', '.') . " ₫</span>
-                                                </h5>
-                                                <form action='menu.php' method='post'>
-                                                    <input type='hidden' name='item_name' value='" . $item['name'] . "'>
-                                                    <input type='hidden' name='price' value='" . $item['price'] . "'>
-                                                     <input type='number' name='quantity' value='1' min='1' 
-                                                           class='form-control mb-2' style='width:70px;'>
-                                                    <button type='submit' class='btn btn-primary'>+</button>
-                                                </form>
-                                            </div>
-                                        </div>
-                                    </div>";
-                                }
-                                ?>
+                                   ?>
+    <div class="col-lg-6">
+      <div class="d-flex align-items-center">
+        <img class="flex-shrink-0 img-fluid rounded"
+             src="<?= htmlspecialchars($item['image_url']) ?>"
+             alt="" style="width:150px;">
+        <div class="w-100 d-flex flex-column text-start ps-4">
+          <h5 class="d-flex justify-content-between border-bottom pb-2">
+            <span><?= htmlspecialchars($item['name']) ?></span>
+            <span class="text-primary">
+              <?= number_format($item['price'],0,',','.') ?> ₫
+            </span>
+          </h5>
+
+          <!-- START Add-to-Cart Form -->
+          <form action="menu.php" method="post" class="d-flex align-items-center mt-2">
+            <!-- use item_id so PHP knows which item -->
+            <input type="hidden" name="add_item_id" value="<?= $item['id'] ?>">
+            <input type="number"
+                   name="quantity"
+                   value="1"
+                   min="1"
+                   class="form-control me-2"
+                   style="width:70px;">
+            <button type="submit" class="btn btn-primary">+</button>
+          </form>
+          <!-- END Add-to-Cart Form -->
+
+        </div>
+      </div>
+    </div>
+    <?php
+}
+?>
                             </div>
                         </div>
                     </div>
@@ -428,68 +590,63 @@ foreach ($_SESSION['cart'] as $ci) {
         </div>
         <!-- Menu End -->
         
-        <!-- Cart Section Start -->
-<div class="container my-5">
-  <h3 class="mb-4">Your Cart</h3>
-
-  <?php if (!empty($_SESSION['cart'])): ?>
-    <div class="card shadow-sm">
-      <div class="card-body">
-        <div class="table-responsive">
-          <table class="table align-middle mb-0">
-            <thead class="table-light">
-              <tr>
-                <th>Dish</th>
-                <th class="text-center">Quantity</th>
-                <th class="text-end">Unit Price</th>
-                <th class="text-end">Subtotal</th>
-                <th class="text-center">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              <?php foreach ($_SESSION['cart'] as $item): 
-                $subtotal = $item['price'] * $item['quantity'];
-              ?>
+        <!-- Cart Section -->
+  <div id="menu-items" class="mt-5">
+    <h3>Your Cart</h3>
+    <?php if (empty($_SESSION['cart'])): ?>
+      <div class="alert alert-info">Your cart is currently empty.</div>
+    <?php else: ?>
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <div class="table-responsive">
+            <table class="table align-middle mb-0">
+              <thead class="table-light">
                 <tr>
-                  <td><?= htmlspecialchars($item['name']) ?></td>
-                  <td class="text-center"><?= intval($item['quantity']) ?></td>
-                  <td class="text-end"><?= number_format($item['price'],0,',','.') ?> ₫</td>
-                  <td class="text-end"><?= number_format($subtotal,0,',','.') ?> ₫</td>
-                  <td class="text-center">
-                    <a href="?remove_item=<?= urlencode($item['name']) ?>"
-                       class="btn btn-sm btn-outline-danger"
-                       title="Remove">
-                      <i class="fas fa-trash-alt"></i>
-                    </a>
-                  </td>
+                  <th>Dish</th>
+                  <th class="text-center">Qty</th>
+                  <th class="text-end">Unit Price</th>
+                  <th class="text-end">Subtotal</th>
+                  <th class="text-center">Action</th>
                 </tr>
-              <?php endforeach; ?>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="d-flex justify-content-between align-items-center mt-4">
-          <h5 class="mb-0">Total:</h5>
-          <h4 class="mb-0 text-primary"><?= number_format($total_price,0,',','.') ?> ₫</h4>
-        </div>
-
-        <div class="text-end mt-3">
-          <form action="order.php" method="post" class="d-inline">
-            <button type="submit" name="place_order" class="btn btn-success btn-lg">
-              <i class="fas fa-credit-card me-2"></i> Place Order
-            </button>
-          </form>
+              </thead>
+              <tbody>
+                <?php foreach ($_SESSION['cart'] as $item):
+                  $subtotal = $item['price'] * $item['quantity'];
+                ?>
+                  <tr>
+                    <td><?= htmlspecialchars($item['name']) ?></td>
+                    <td class="text-center"><?= intval($item['quantity']) ?></td>
+                    <td class="text-end"><?= number_format($item['price'],0,',','.') ?> ₫</td>
+                    <td class="text-end"><?= number_format($subtotal,0,',','.') ?> ₫</td>
+                    <td class="text-center">
+                      <a href="?remove_item=<?= $item['item_id'] ?>&category=<?= urlencode($selected) ?>#menu-items"
+                         class="btn btn-sm btn-outline-danger" title="Remove">
+                        &times;
+                      </a>
+                    </td>
+                  </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
+          <div class="d-flex justify-content-between align-items-center mt-4">
+            <h5>Total:</h5>
+            <h4 class="text-primary"><?= number_format($total_price,0,',','.') ?> ₫</h4>
+          </div>
+          <div class="text-end mt-3">
+            <form method="post">
+              <button type="submit" name="action" value="checkout"
+                      class="btn btn-success btn-lg">
+                Place Order
+              </button>
+            </form>
+          </div>
         </div>
       </div>
-    </div>
+    <?php endif; ?>
+  </div>
 
-  <?php else: ?>
-    <div class="alert alert-info">
-      Your cart is currently empty.
-    </div>
-  <?php endif; ?>
-</div>
-<!-- Cart Section End -->
+
 
 
 

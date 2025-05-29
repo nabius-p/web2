@@ -29,15 +29,15 @@ foreach ($_SESSION['cart'] as $ci) {
 $history = [];
 if (!empty($_SESSION['customer_email'])) {
     $stmt_hist = $conn->prepare("
-      SELECT 
-        mi.name                     AS dish,
-        SUM(oi.quantity)            AS total_qty,
-        SUM(oi.quantity * mi.price) AS total_spent
-      FROM orders o
-      JOIN order_items oi ON oi.order_id = o.id
-      JOIN items mi       ON mi.id       = oi.item_id
-      WHERE o.customer_email = ?
-      GROUP BY oi.item_id
+      SELECT
+        mi.name                         AS dish,
+        SUM(ii.quantity)                AS total_qty,
+        SUM(ii.quantity * ii.price)     AS total_spent
+      FROM invoices inv
+      JOIN invoice_items ii  ON ii.invoice_id = inv.id
+      JOIN items mi          ON mi.id         = ii.item_id
+      WHERE inv.customer_email = ?
+      GROUP BY ii.item_id
     ");
     $stmt_hist->bind_param("s", $_SESSION['customer_email']);
     $stmt_hist->execute();

@@ -1,19 +1,19 @@
 <?php
+// logout.php
 declare(strict_types=1);
 
-// 1) Bắt đầu rồi hủy session hiện tại
 session_start();
 
-// Xóa tất cả biến session
+// 1) Xoá toàn bộ dữ liệu session
 $_SESSION = [];
 
-// Nếu đang dùng cookie để lưu session, hủy cookie đó
+// 2) Huỷ cookie session nếu có
 if (ini_get('session.use_cookies')) {
     $params = session_get_cookie_params();
     setcookie(
-        session_name(),       // tên cookie
-        '',                   // giá trị rỗng
-        time() - 42000,       // đã hết hạn
+        session_name(),
+        '',
+        time() - 3600,
         $params['path'],
         $params['domain'],
         $params['secure'],
@@ -21,13 +21,13 @@ if (ini_get('session.use_cookies')) {
     );
 }
 
-// Hủy session
+// 3) Huỷ session trên server
 session_destroy();
 
-// 2) Tạo session mới để lưu flash message
+// 4) Bắt đầu session mới để lưu flash message
 session_start();
 $_SESSION['flash_message'] = 'Bạn đã đăng xuất thành công.';
 
-// 3) Chuyển hướng về login.php
+// 5) Chuyển hướng về trang login
 header('Location: login.php');
 exit();

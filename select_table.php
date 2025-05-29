@@ -9,46 +9,48 @@ if (!isset($_SESSION['cart'])) {
     $_SESSION['cart'] = [];
 }
 
-// Kết nối database
+// Kết nối database (schema mới hotpot_app1)
 $servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "hotpot_app";
+$username   = "root";
+$password   = "";
+$dbname     = "hotpot_app1";
 
 $conn = new mysqli($servername, $username, $password, $dbname);
 if ($conn->connect_error) {
     die("Kết nối thất bại: " . $conn->connect_error);
 }
 
-if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-    $table_number = $_POST['table_number'] ?? '';
-    $customer_name = $_POST['customer_name'] ?? '';
-    $customer_email = $_POST['customer_email'] ?? '';
+$error = '';
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $table_number   = trim($_POST['table_number'] ?? '');
+    $customer_name  = trim($_POST['customer_name'] ?? '');
+    $customer_email = trim($_POST['customer_email'] ?? '');
 
-    $_SESSION['table_number'] = $table_number;
-
-    // Chèn đơn hàng
-    $sql = "INSERT INTO orders (customer_name, customer_email, total_price, order_date, table_number)
-            VALUES (?, ?, 0, NOW(), ?)";
-
-    $stmt = $conn->prepare($sql);
-    if ($stmt) {
-        $stmt->bind_param("ssi", $customer_name, $customer_email, $table_number);
-        if ($stmt->execute()) {
-            $_SESSION['order_id'] = $conn->insert_id;
-            $_SESSION['customer_name'] = $customer_name;
-            $_SESSION['customer_email'] = $customer_email;
-
-            echo "Redirecting to menu..."; // debug
-            header("Location: menu.php");
-            exit();
-            header("Location: menu.php");
-            exit();
-        } else {
-            echo "Lỗi khi thực hiện câu lệnh: " . $stmt->error;
-        }
+    if ($table_number === '' || $customer_name === '' || $customer_email === '') {
+        $error = "Vui lòng điền đầy đủ thông tin.";
     } else {
-        echo "Lỗi khi chuẩn bị câu lệnh: " . $conn->error;
+        // Lưu table_number vào session để dùng sau (không lưu vào DB)
+        $_SESSION['table_number']   = $table_number;
+        $_SESSION['customer_name']  = $customer_name;
+        $_SESSION['customer_email'] = $customer_email;
+
+        // Tạo invoice mới
+        $sql = "INSERT INTO invoices (customer_name, customer_email, total_amount, created_at)
+                VALUES (?, ?, 0, NOW())";
+
+        if ($stmt = $conn->prepare($sql)) {
+            $stmt->bind_param("ss", $customer_name, $customer_email);
+            if ($stmt->execute()) {
+                // Lưu invoice_id vào session để menu.php sử dụng
+                $_SESSION['invoice_id'] = $conn->insert_id;
+                header("Location: menu.php");
+                exit();
+            } else {
+                $error = "Lỗi khi thực thi: " . $stmt->error;
+            }
+        } else {
+            $error = "Lỗi khi chuẩn bị câu lệnh: " . $conn->error;
+        }
     }
 }
 ?>
