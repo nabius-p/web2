@@ -1,7 +1,8 @@
 <?php
 session_start();
-include('db.php'); // Kết nối DB
+include('db.php'); // Kết nối DB, tạo $conn
 
+// Hiển thị flash message (nếu có) rồi xoá
 if (!empty($_SESSION['flash_message'])) {
     echo '<div class="alert alert-success text-center">'
          . htmlspecialchars($_SESSION['flash_message']) .
@@ -20,14 +21,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $user = trim($_POST['username'] ?? '');
     $pass = trim($_POST['password'] ?? '');
 
-    // TODO: Thay bằng truy vấn DB nếu cần
-    if ($user === 'admin' && $pass === '12345678') {
-        $_SESSION['admin_logged_in'] = true;
-        $_SESSION['admin_user']      = $user;
-        header('Location: admin.php');
-        exit();
+    // Chuẩn bị truy vấn lấy mật khẩu và vai trò từ bảng users
+    $sql = "SELECT id, password, role FROM users WHERE username = ?";
+    if ($stmt = $conn->prepare($sql)) {
+        $stmt->bind_param("s", $user);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        // Nếu tìm thấy user
+        if ($row = $result->fetch_assoc()) {
+            // Vì database đang lưu password dạng plaintext, so sánh trực tiếp
+            if ($pass === $row['password'] && $row['role'] === 'admin') {
+                // Đăng nhập thành công
+                $_SESSION['admin_logged_in'] = true;
+                $_SESSION['admin_user']      = $user;
+                $_SESSION['admin_id']        = $row['id'];
+                header('Location: admin.php');
+                exit();
+            } else {
+                $error = 'Tên đăng nhập hoặc mật khẩu không đúng, hoặc bạn không có quyền admin.';
+            }
+        } else {
+            $error = 'Tên đăng nhập hoặc mật khẩu không đúng.';
+        }
+        $stmt->close();
     } else {
-        $error = 'Tên đăng nhập hoặc mật khẩu không đúng.';
+        $error = 'Lỗi hệ thống, vui lòng thử lại sau.';
     }
 }
 ?>
@@ -48,15 +66,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   <link href="css/bootstrap.min.css" rel="stylesheet">
 
   <style>
-    body {
-     
-    /* Logo text uses Baloo 2 */
     .logo-text {
       font-family: 'Pacifico',cursive;
       font-weight: bold;
       font-size: 1.9rem;
       color: #fea116;
-      line-height: 1.5;
     }
     .login-card {
       max-width: 360px;
@@ -70,9 +84,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       font-family: 'Pacifico', cursive;
       margin-bottom: 1.5rem;
     }
-    /* Tighter footer */
     .site-footer {
-      padding: 3rem ;
+      padding: 3rem;
       font-size: 1.1rem;
     }
   </style>
