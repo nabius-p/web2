@@ -1,33 +1,33 @@
 <?php
 // admin_inventory.php — include from admin.php (session_start & $conn already done)
 
-// 1) Handle new Purchase Order (PO) creation: we’ll insert into invoices/invoice_items instead of po
+// 1) Handle new Purchase Order (PO) creation
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['po_ing'], $_POST['po_qty'])) {
     $item_id = intval($_POST['po_ing']);
     $qty     = intval($_POST['po_qty']);
+
     // create a dummy “receive” invoice to model stock replenishment
     $stmt = $conn->prepare("
       INSERT INTO invoices (customer_name, customer_email, total_amount)
-      VALUES ('--PO--', '--PO--', ?)
+      VALUES ('--PO--', '--PO--', 0)
     ");
-    $unit_cost = 0; // you could fetch last cost from items table if you track purchase price
-    $total     = $unit_cost * $qty;
-    $stmt->bind_param("d", $total);
     $stmt->execute();
     $inv_id = $stmt->insert_id;
+
     // record into invoice_items
     $stmt2 = $conn->prepare("
       INSERT INTO invoice_items (invoice_id, item_id, quantity, price)
-      VALUES (?, ?, ?, ?)
+      VALUES (?, ?, ?, 0)
     ");
-    $stmt2->bind_param("iiid", $inv_id, $item_id, $qty, $unit_cost);
+    $stmt2->bind_param("iii", $inv_id, $item_id, $qty);
     $stmt2->execute();
+
     $_SESSION['flash_message'] = "PO created for item #{$item_id} (qty={$qty})";
     header('Location: admin.php?page=inventory#inventory');
     exit();
 }
 
-// 2) Fetch categories of ingredients (items.category)
+// 2) Fetch categories of ingredients
 $cats = $conn->query("SELECT DISTINCT category FROM items ORDER BY category");
 $categories = [];
 while ($r = $cats->fetch_assoc()) {
@@ -35,28 +35,40 @@ while ($r = $cats->fetch_assoc()) {
 }
 $sel_cat = $_GET['cat'] ?? 'All';
 
-// 3) Query current stock from inventory JOIN items
+// 3) Query current stock by item
+$base_query = "
+  SELECT 
+    itm.id                  AS item_id,
+    itm.name,
+    itm.category,
+    COALESCE(po_imports.total,0) - COALESCE(sales.total,0) AS stock_quantity
+  FROM items itm
+  LEFT JOIN (
+    SELECT ii.item_id, SUM(ii.quantity) AS total
+    FROM invoices inv
+    JOIN invoice_items ii ON ii.invoice_id=inv.id
+    WHERE inv.customer_name='--PO--'
+    GROUP BY ii.item_id
+  ) AS po_imports ON po_imports.item_id = itm.id
+  LEFT JOIN (
+    SELECT ii.item_id, SUM(ii.quantity) AS total
+    FROM invoices inv
+    JOIN invoice_items ii ON ii.invoice_id=inv.id
+    WHERE inv.customer_name<>'--PO--'
+    GROUP BY ii.item_id
+  ) AS sales ON sales.item_id = itm.id
+";
+
 if ($sel_cat !== 'All') {
-    $stmt = $conn->prepare("
-      SELECT i.item_id, itm.name, itm.category, i.stock_quantity
-      FROM inventory i
-      JOIN items itm ON itm.id=i.item_id
-      WHERE itm.category=?
-      ORDER BY itm.name
-    ");
+    $stmt = $conn->prepare($base_query . " WHERE itm.category=? ORDER BY itm.name");
     $stmt->bind_param("s", $sel_cat);
     $stmt->execute();
     $stock_res = $stmt->get_result();
 } else {
-    $stock_res = $conn->query("
-      SELECT i.item_id, itm.name, itm.category, i.stock_quantity
-      FROM inventory i
-      JOIN items itm ON itm.id=i.item_id
-      ORDER BY itm.category, itm.name
-    ");
+    $stock_res = $conn->query($base_query . " ORDER BY itm.category, itm.name");
 }
 
-// 4) Fetch recent “replenishment” POs by looking for invoices.customer_name='--PO--'
+// 4) Fetch recent “replenishment” POs
 $po_res = $conn->query("
   SELECT inv.id, ii.item_id, itm.name, ii.quantity, inv.created_at
   FROM invoices inv
@@ -67,25 +79,49 @@ $po_res = $conn->query("
 ");
 
 // 5) Summaries
-$total_qty      = (int)$conn->query("SELECT SUM(stock_quantity) AS t FROM inventory")->fetch_assoc()['t'];
-$pending_po     = (int)$conn->query("
-  SELECT SUM(ii.quantity) 
+// total on-hand
+$total_qty = $conn->query("
+  SELECT SUM(
+    COALESCE(po_imports.total,0) - COALESCE(sales.total,0)
+  ) AS t
+  FROM items itm
+  LEFT JOIN (
+    SELECT ii.item_id, SUM(ii.quantity) AS total
+    FROM invoices inv
+    JOIN invoice_items ii ON ii.invoice_id=inv.id
+    WHERE inv.customer_name='--PO--'
+    GROUP BY ii.item_id
+  ) po_imports ON po_imports.item_id = itm.id
+  LEFT JOIN (
+    SELECT ii.item_id, SUM(ii.quantity) AS total
+    FROM invoices inv
+    JOIN invoice_items ii ON ii.invoice_id=inv.id
+    WHERE inv.customer_name<>'--PO--'
+    GROUP BY ii.item_id
+  ) sales ON sales.item_id = itm.id
+")->fetch_assoc()['t'];
+// pending PO = tổng số lượng PO gần đây
+$pending_po = $conn->query("
+  SELECT SUM(ii.quantity)
   FROM invoices inv
   JOIN invoice_items ii ON ii.invoice_id=inv.id
   WHERE inv.customer_name='--PO--'
 ")->fetch_row()[0];
-$suppliers_cnt  = 31;  // placeholder
-$cat_cnt        = count($categories);
+$suppliers_cnt = 31;  // placeholder
+$cat_cnt       = count($categories);
 ?>
 
 <h2 id="inventory">Inventory Management</h2>
 
 <?php if (!empty($_SESSION['flash_message'])): ?>
-  <div class="alert alert-success text-center"><?= htmlspecialchars($_SESSION['flash_message']) ?></div>
+  <div class="alert alert-success text-center">
+    <?= htmlspecialchars($_SESSION['flash_message']) ?>
+  </div>
   <?php unset($_SESSION['flash_message']); ?>
 <?php endif; ?>
 
 <div class="row g-3 mb-4">
+  <!-- Total Stock -->
   <div class="col-md-3">
     <div class="card text-center shadow-sm p-3">
       <i class="fas fa-layer-group fa-2x text-primary mb-2"></i>
@@ -93,6 +129,7 @@ $cat_cnt        = count($categories);
       <h4><?= number_format($total_qty) ?></h4>
     </div>
   </div>
+  <!-- Pending PO -->
   <div class="col-md-3">
     <div class="card text-center shadow-sm p-3">
       <i class="fas fa-truck-loading fa-2x text-warning mb-2"></i>
@@ -100,6 +137,7 @@ $cat_cnt        = count($categories);
       <h4><?= number_format($pending_po) ?></h4>
     </div>
   </div>
+  <!-- Suppliers -->
   <div class="col-md-3">
     <div class="card text-center shadow-sm p-3">
       <i class="fas fa-industry fa-2x text-success mb-2"></i>
@@ -107,6 +145,7 @@ $cat_cnt        = count($categories);
       <h4><?= $suppliers_cnt ?></h4>
     </div>
   </div>
+  <!-- Categories -->
   <div class="col-md-3">
     <div class="card text-center shadow-sm p-3">
       <i class="fas fa-tags fa-2x text-info mb-2"></i>
@@ -169,7 +208,7 @@ $cat_cnt        = count($categories);
   </div>
 </form>
 
-<!-- Outstanding POs -->
+<!-- Recent Purchase Orders -->
 <h5>Recent Purchase Orders</h5>
 <table class="table table-striped">
   <thead class="table-dark">

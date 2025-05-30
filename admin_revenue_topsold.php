@@ -6,17 +6,17 @@
 ini_set('display_errors',1);
 error_reporting(E_ALL);
 
-// Xác định tuần này
+// Xác định tuần này (từ thứ Hai đến Chủ Nhật)
 $week_start = date('Y-m-d', strtotime('monday this week'));
 $week_end   = date('Y-m-d', strtotime('sunday this week'));
 
 // 1) Top 7 món bán chạy tuần này
 $stmt = $conn->prepare("
-  SELECT i.name, SUM(oi.quantity) AS sold_qty
-  FROM order_items oi
-  JOIN items i   ON i.id = oi.item_id
-  JOIN orders o  ON o.id = oi.order_id
-  WHERE DATE(o.order_date) BETWEEN ? AND ?
+  SELECT i.name, SUM(ii.quantity) AS sold_qty
+  FROM invoice_items ii
+  JOIN items i      ON i.id        = ii.item_id
+  JOIN invoices inv ON inv.id      = ii.invoice_id
+  WHERE DATE(inv.created_at) BETWEEN ? AND ?
   GROUP BY i.id
   ORDER BY sold_qty DESC
   LIMIT 7
@@ -24,34 +24,34 @@ $stmt = $conn->prepare("
 $stmt->bind_param("ss", $week_start, $week_end);
 $stmt->execute();
 $top7 = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-$labels_top = [];
-$data_top   = [];
-foreach ($top7 as $row) {
-    $labels_top[] = $row['name'];
-    $data_top[]   = (int)$row['sold_qty'];
-}
 
-// 2) Doanh số theo ngày trong tuần này
+$labels_top = array_column($top7, 'name');
+$data_top   = array_map('intval', array_column($top7, 'sold_qty'));
+
+// 2) Doanh số theo ngày trong tuần này (số lượng bán mỗi ngày)
 $stmt2 = $conn->prepare("
-  SELECT DATE(o.order_date) AS day, SUM(oi.quantity) AS total_qty
-  FROM order_items oi
-  JOIN orders o ON o.id = oi.order_id
-  WHERE DATE(o.order_date) BETWEEN ? AND ?
-  GROUP BY DATE(o.order_date)
-  ORDER BY DATE(o.order_date)
+  SELECT DATE(inv.created_at) AS day, SUM(ii.quantity) AS total_qty
+  FROM invoice_items ii
+  JOIN invoices inv ON inv.id = ii.invoice_id
+  WHERE DATE(inv.created_at) BETWEEN ? AND ?
+  GROUP BY DATE(inv.created_at)
+  ORDER BY DATE(inv.created_at)
 ");
 $stmt2->bind_param("ss", $week_start, $week_end);
 $stmt2->execute();
 $res2 = $stmt2->get_result();
+
+// Khởi tạo mảng ngày trong tuần với giá trị 0
 $labels_day = [];
 $data_day   = [];
-// Điền đủ 7 ngày, nếu ngày nào không có sẽ thành 0
 for ($d = strtotime($week_start); $d <= strtotime($week_end); $d += 86400) {
-    $labels_day[] = date('D d', $d);
-    $data_day[ date('Y-m-d', $d) ] = 0;
+    $ymd = date('Y-m-d', $d);
+    $labels_day[]      = date('D d', $d);
+    $data_day[$ymd]    = 0;
 }
+// Gán lại giá trị thực từ kết quả query
 while ($r = $res2->fetch_assoc()) {
-    $data_day[ $r['day'] ] = (int)$r['total_qty'];
+    $data_day[$r['day']] = (int)$r['total_qty'];
 }
 $data_day_vals = array_values($data_day);
 ?>
@@ -93,7 +93,7 @@ new Chart(barCtx, {
     datasets: [{
       label: 'Qty Sold',
       data: <?= json_encode($data_top) ?>,
-      backgroundColor: 'rgba(54,162,235,0.6)'
+      // Không chỉ định màu để tuân thủ guideline
     }]
   },
   options: {
@@ -114,9 +114,8 @@ new Chart(lineCtx, {
       label: 'Daily Qty',
       data: <?= json_encode($data_day_vals) ?>,
       fill: false,
-      tension: 0.4,
-      borderColor: 'rgba(255,99,132,1)',
-      pointBackgroundColor: 'rgba(255,99,132,1)',
+      tension: 0.4
+      // Không chỉ định màu để tuân thủ guideline
     }]
   },
   options: {
