@@ -1,313 +1,374 @@
 <?php
-// admin_revenue_sales.php – include từ admin.php (đã session_start & include db.php)
-include 'db.php';
+// admin_revenue_sales.php
 
-/* --- 0) Xử lý AJAX detail: nếu có ?detail=… trả về HTML và exit --- */
-if (isset($_GET['detail'])) {
-    $today = $_GET['date'] ?? date('Y-m-d');
-    $key   = $_GET['detail'];
+include 'db.php'; // $conn → hotpot_app1
+
+// 1) AJAX handler: when ?detail=sales&date=YYYY-MM-DD
+if (isset($_GET['detail']) && $_GET['detail'] === 'sales') {
+    $date = $_GET['date'] ?? date('Y-m-d');
     header('Content-Type: text/html; charset=UTF-8');
-
-    echo '<div class="table-responsive">';
-    echo '<table class="table table-sm mb-0">';
-
-    switch ($key) {
-
-        case 'sales':
-            echo '<thead><tr><th>Invoice ID</th><th>Customer</th><th class="text-end">Amount</th></tr></thead><tbody>';
-            $stmt = $conn->prepare("
-                SELECT id, customer_name, total_amount
-                FROM invoices
-                WHERE DATE(created_at)=?
-                ORDER BY created_at DESC
-            ");
-            $stmt->bind_param("s", $today);
-            $stmt->execute();
-            $rs = $stmt->get_result();
-            while ($r = $rs->fetch_assoc()) {
-                printf(
-                    '<tr><td>%d</td><td>%s</td><td class="text-end">%s ₫</td></tr>',
-                    $r['id'],
-                    htmlspecialchars($r['customer_name']),
-                    number_format($r['total_amount'], 0, ',', '.')
-                );
-            }
-            echo '</tbody>';
-            break;
-
-        case 'dishes':
-            echo '<thead><tr><th>Dish</th><th class="text-center">Qty</th></tr></thead><tbody>';
-            $stmt = $conn->prepare("
-                SELECT i.name, SUM(ii.quantity) AS qty
-                FROM invoices inv
-                JOIN invoice_items ii ON ii.invoice_id=inv.id
-                JOIN items i          ON i.id=ii.item_id
-                WHERE DATE(inv.created_at)=?
-                GROUP BY ii.item_id
-                ORDER BY qty DESC
-            ");
-            $stmt->bind_param("s", $today);
-            $stmt->execute();
-            $rs = $stmt->get_result();
-            while ($r = $rs->fetch_assoc()) {
-                printf(
-                    '<tr><td>%s</td><td class="text-center">%d</td></tr>',
-                    htmlspecialchars($r['name']),
-                    $r['qty']
-                );
-            }
-            echo '</tbody>';
-            break;
-
-        case 'orders':
-            echo '<thead><tr><th>Invoice ID</th><th>Customer</th></tr></thead><tbody>';
-            $stmt = $conn->prepare("
-                SELECT id, customer_name
-                FROM invoices
-                WHERE DATE(created_at)=?
-                ORDER BY created_at DESC
-            ");
-            $stmt->bind_param("s", $today);
-            $stmt->execute();
-            $rs = $stmt->get_result();
-            while ($r = $rs->fetch_assoc()) {
-                printf(
-                    '<tr><td>%d</td><td>%s</td></tr>',
-                    $r['id'],
-                    htmlspecialchars($r['customer_name'])
-                );
-            }
-            echo '</tbody>';
-            break;
-
-        case 'new':
-            echo '<thead><tr><th>Customer</th><th>Email</th></tr></thead><tbody>';
-            $stmt = $conn->prepare("
-                SELECT DISTINCT customer_name, customer_email
-                FROM invoices
-                WHERE DATE(created_at)=?
-            ");
-            $stmt->bind_param("s", $today);
-            $stmt->execute();
-            $rs = $stmt->get_result();
-            while ($r = $rs->fetch_assoc()) {
-                printf(
-                    '<tr><td>%s</td><td>%s</td></tr>',
-                    htmlspecialchars($r['customer_name']),
-                    htmlspecialchars($r['customer_email'])
-                );
-            }
-            echo '</tbody>';
-            break;
-
-        default:
-            echo '<tr><td colspan="3" class="text-danger">Unknown detail key.</td></tr>';
-            break;
+    echo '<div class="table-responsive"><table class="table table-striped">';
+    echo '<thead><tr><th>Invoice #</th><th>Customer</th><th>DateTime</th><th class="text-end">Amount</th></tr></thead><tbody>';
+    $stmt = $conn->prepare("
+      SELECT id, customer_name, created_at, total_amount
+      FROM invoices
+      WHERE DATE(created_at)=?
+      ORDER BY created_at DESC
+    ");
+    $stmt->bind_param("s", $date);
+    $stmt->execute();
+    $rs = $stmt->get_result();
+    while ($row = $rs->fetch_assoc()) {
+        echo '<tr>'
+           . '<td>'.$row['id'].'</td>'
+           . '<td>'.htmlspecialchars($row['customer_name']).'</td>'
+           . '<td>'.date('Y-m-d H:i:s', strtotime($row['created_at'])).'</td>'
+           . '<td class="text-end">'.number_format($row['total_amount'],0,',','.').'₫</td>'
+           . '</tr>';
     }
-
-    echo '</table></div>';
+    echo '</tbody></table></div>';
     exit;
 }
 
-/* --- 1) Lấy tham số date & range --- */
-$range     = intval($_GET['range']  ?? 7);
-$today     = $_GET['date'] ?? date('Y-m-d');
-if (!in_array($range, [7,30,90])) $range = 7;
-$yesterday = date('Y-m-d', strtotime("$today -1 day"));
+// 2) Login check
+if (empty($_SESSION['admin_logged_in'])) {
+    header('Location: login.php');
+    exit();
+}
 
-/* --- 2) Các hàm tiện ích --- */
-function get_total_sales($conn, $date) {
-    $stmt = $conn->prepare("SELECT SUM(total_amount) AS s FROM invoices WHERE DATE(created_at)=?");
-    $stmt->bind_param("s", $date);
-    $stmt->execute();
-    return (float)$stmt->get_result()->fetch_assoc()['s'];
+// 3) Get parameters
+$date   = $_GET['date']   ?? date('Y-m-d');
+$period = intval($_GET['period'] ?? 7);
+
+// 4) Fetch daily KPIs
+// Total Sales
+$stmt = $conn->prepare("SELECT COALESCE(SUM(total_amount),0) FROM invoices WHERE DATE(created_at)=?");
+$stmt->bind_param("s", $date); $stmt->execute(); $stmt->bind_result($totalSales);
+$stmt->fetch(); $stmt->close();
+
+// Total Orders
+$stmt = $conn->prepare("SELECT COUNT(*) FROM invoices WHERE DATE(created_at)=?");
+$stmt->bind_param("s", $date); $stmt->execute(); $stmt->bind_result($totalOrders);
+$stmt->fetch(); $stmt->close();
+
+// Dishes Sold
+$stmt = $conn->prepare("
+  SELECT COALESCE(SUM(ii.quantity),0)
+  FROM invoice_items ii
+  JOIN invoices i ON ii.invoice_id=i.id
+  WHERE DATE(i.created_at)=?
+");
+$stmt->bind_param("s", $date); $stmt->execute(); $stmt->bind_result($dishesSold);
+$stmt->fetch(); $stmt->close();
+
+// New Customers
+$stmt = $conn->prepare("SELECT COUNT(*) FROM customers WHERE DATE(created_at)=?");
+$stmt->bind_param("s", $date); $stmt->execute(); $stmt->bind_result($newCustomers);
+$stmt->fetch(); $stmt->close();
+
+// 5) Build data for charts
+$labels = $dataCur = $dataPrev = [];
+for ($i=$period-1; $i>=0; $i--) {
+    $d = date('Y-m-d', strtotime("-{$i} days", strtotime($date)));
+    $labels[] = date('D', strtotime($d));
+    $stmt = $conn->prepare("SELECT COALESCE(SUM(total_amount),0) FROM invoices WHERE DATE(created_at)=?");
+    $stmt->bind_param("s",$d); $stmt->execute(); $stmt->bind_result($sum);
+    $stmt->fetch(); $stmt->close();
+    $dataCur[] = (float)$sum;
 }
-function get_total_orders($conn, $date) {
-    $stmt = $conn->prepare("SELECT COUNT(*) AS c FROM invoices WHERE DATE(created_at)=?");
-    $stmt->bind_param("s", $date);
-    $stmt->execute();
-    return (int)$stmt->get_result()->fetch_assoc()['c'];
+for ($i=2*$period-1; $i>= $period; $i--) {
+    $d = date('Y-m-d', strtotime("-{$i} days", strtotime($date)));
+    $stmt = $conn->prepare("SELECT COALESCE(SUM(total_amount),0) FROM invoices WHERE DATE(created_at)=?");
+    $stmt->bind_param("s",$d); $stmt->execute(); $stmt->bind_result($sum);
+    $stmt->fetch(); $stmt->close();
+    $dataPrev[] = (float)$sum;
 }
-function get_dishes_sold($conn, $date) {
+$weeklyData = $dataCur;
+
+// Peak Hour
+$peakLabels = ['9:00','11:00','13:00','15:00','17:00','19:00','21:00','22:00'];
+$peakValues = [];
+foreach ([9,11,13,15,17,19,21,22] as $hr) {
     $stmt = $conn->prepare("
-        SELECT SUM(ii.quantity) AS q
-        FROM invoices inv
-        JOIN invoice_items ii ON ii.invoice_id=inv.id
-        WHERE DATE(inv.created_at)=?
+      SELECT COUNT(*) FROM invoices
+      WHERE DATE(created_at)=? AND HOUR(created_at)=?
     ");
-    $stmt->bind_param("s", $date);
-    $stmt->execute();
-    return (int)$stmt->get_result()->fetch_assoc()['q'];
+    $stmt->bind_param("si",$date,$hr); $stmt->execute();
+    $stmt->bind_result($cnt); $stmt->fetch(); $stmt->close();
+    $peakValues[] = $cnt;
 }
-function get_new_customers($conn, $date) {
+
+// Customer Insights
+$ciLabels = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+$ciLoyal = $ciNew = $ciUnique = [];
+for ($m=1; $m<=12; $m++) {
+    // Loyal
     $stmt = $conn->prepare("
-        SELECT COUNT(DISTINCT customer_email) AS c
-        FROM invoices
-        WHERE DATE(created_at)=?
+      SELECT COUNT(DISTINCT customer_email) FROM invoices
+      WHERE MONTH(created_at)=? AND customer_email IN (
+        SELECT customer_email FROM invoices
+        WHERE MONTH(created_at)=?
+        GROUP BY customer_email
+        HAVING COUNT(*)>1
+      )
     ");
-    $stmt->bind_param("s", $date);
-    $stmt->execute();
-    return (int)$stmt->get_result()->fetch_assoc()['c'];
-}
-function pct_change($new, $old) {
-    if ($old <= 0) return 0;
-    return round((($new - $old) / $old) * 100, 1);
-}
-
-/* --- 3) Tính số liệu cho Today & Yesterday --- */
-$total_sales   = get_total_sales($conn, $today);
-$total_orders  = get_total_orders($conn, $today);
-$dishes_sold   = get_dishes_sold($conn, $today);
-$new_customers = get_new_customers($conn, $today);
-
-$chg_sales     = pct_change($total_sales,   get_total_sales($conn, $yesterday));
-$chg_orders    = pct_change($total_orders,  get_total_orders($conn, $yesterday));
-$chg_dishes    = pct_change($dishes_sold,   get_dishes_sold($conn, $yesterday));
-$chg_customers = pct_change($new_customers, get_new_customers($conn, $yesterday));
-
-/* --- 4) Dữ liệu cho charts --- */
-$labels    = $data_cur = $data_prev = [];
-for ($i = $range - 1; $i >= 0; $i--) {
-    $d = date('Y-m-d', strtotime("-{$i} days"));
-    $labels[] = date('d M', strtotime($d));
-
-    // This period
-    $stmt = $conn->prepare("SELECT SUM(total_amount) AS s FROM invoices WHERE DATE(created_at)=?");
-    $stmt->bind_param("s", $d);
-    $stmt->execute();
-    $data_cur[] = (float)$stmt->get_result()->fetch_assoc()['s'];
-
-    // Previous period
-    $d2 = date('Y-m-d', strtotime("-".($i + $range)." days"));
-    $stmt->bind_param("s", $d2);
-    $stmt->execute();
-    $data_prev[] = (float)$stmt->get_result()->fetch_assoc()['s'];
+    $stmt->bind_param("ii",$m,$m); $stmt->execute();
+    $stmt->bind_result($v); $stmt->fetch(); $stmt->close();
+    $ciLoyal[] = $v;
+    // New
+    $stmt = $conn->prepare("SELECT COUNT(*) FROM customers WHERE MONTH(created_at)=?");
+    $stmt->bind_param("i",$m); $stmt->execute();
+    $stmt->bind_result($v); $stmt->fetch(); $stmt->close();
+    $ciNew[] = $v;
+    // Unique
+    $stmt = $conn->prepare("SELECT COUNT(*) FROM invoices WHERE MONTH(created_at)=?");
+    $stmt->bind_param("i",$m); $stmt->execute();
+    $stmt->bind_result($v); $stmt->fetch(); $stmt->close();
+    $ciUnique[] = $v;
 }
 
-/* --- 5) Recent transactions (Today) --- */
-$recent = $conn->query("
-    SELECT customer_name, total_amount
-    FROM invoices
-    WHERE DATE(created_at)= '$today'
-    ORDER BY created_at DESC
-    LIMIT 5
-")->fetch_all(MYSQLI_ASSOC);
+// 6) Recent Transactions (for main table)
+$stmt = $conn->prepare("
+  SELECT id, customer_name, created_at, total_amount
+  FROM invoices
+  ORDER BY created_at DESC
+  LIMIT 5
+");
+$stmt->execute();
+$recent = $stmt->get_result();
+$stmt->close();
 ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Admin View Sales | ShinHot Pot</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body {font-family:'Nunito',sans-serif; background:#f8f9fa;}
+    .sidebar{min-height:100vh;background:#fff;border-right:1px solid #ddd;padding-top:1rem;}
+    .sidebar .logo{font-family:'Pacifico',cursive;color:#fea116;padding:.5rem 1rem;}
+    .sidebar .nav-link{color:#333;padding:.75rem 1rem;}
+    .sidebar .nav-link.active{background:#ffd54f;color:#fff;border-radius:.25rem;font-weight:600;}
+    .content{padding:2rem;}
+    .summary-card{border-radius:.75rem;}
+    .profit-card{border-radius:1rem;background:linear-gradient(135deg,#FFA726 0%,#FFCC80 100%);color:#fff;box-shadow:0 8px 20px rgba(0,0,0,0.15);}
+    .profit-balance{display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;}
+    .profit-balance h3{margin:0;font-size:2.5rem;font-weight:700;}
+    .net-profit{display:flex;align-items:center;}
+    .net-profit i{font-size:1.75rem;margin-right:.75rem;}
+    .net-profit small{opacity:.85;}
+  </style>
+</head>
+<body>
 
-<!-- Form chọn ngày -->
-<form method="get" class="mb-4">
-  <input type="hidden" name="page" value="revenue_sales">
-  <div class="d-flex gap-2 align-items-center">
-    <label class="m-0">Choose date:</label>
-    <input type="date" name="date" class="form-control form-control-sm w-auto"
-           value="<?= htmlspecialchars($today) ?>">
-    <select name="range" class="form-select form-select-sm w-auto">
-      <option value="7"  <?= $range===7  ? 'selected' : '' ?>>7 days</option>
-      <option value="30" <?= $range===30 ? 'selected' : '' ?>>30 days</option>
-      <option value="90" <?= $range===90 ? 'selected' : '' ?>>90 days</option>
-    </select>
-    <button class="btn btn-primary btn-sm">View</button>
-  </div>
-</form>
+<div class="container-fluid">
+  <div class="row">
+    
 
-<!-- Cards -->
-<div class="row gy-4 mb-4">
-  <?php
-    $cards = [
-      ['key'=>'sales','title'=>'Total Sales','value'=>$total_sales,'chg'=>$chg_sales,'suffix'=>' ₫'],
-      ['key'=>'dishes','title'=>'Dishes Sold','value'=>$dishes_sold,'chg'=>$chg_dishes,'suffix'=>''],
-      ['key'=>'orders','title'=>'Total Orders','value'=>$total_orders,'chg'=>$chg_orders,'suffix'=>''],
-      ['key'=>'new','title'=>'New Customers','value'=>$new_customers,'chg'=>$chg_customers,'suffix'=>''],
-    ];
-    foreach($cards as $c): ?>
-    <div class="col-md-3">
-      <div class="card shadow-sm"
-           role="button"
-           data-bs-toggle="modal"
-           data-bs-target="#detailModal"
-           onclick="showDetail('<?= $c['key'] ?>')">
-        <div class="card-body">
-          <h6><?= $c['title'] ?></h6>
-          <h3><?= number_format($c['value'],0,',','.') ?><?= $c['suffix'] ?></h3>
-          <small class="text-<?= $c['chg']>=0?'success':'danger' ?>">
-            <?= ($c['chg']>=0?'+':'').$c['chg'] ?>% from yesterday
-          </small>
+    <!-- Main -->
+    <main class="col-10 content">
+      <!-- Sales Summary Header -->
+      <div class="d-flex justify-content-between align-items-center mb-4">
+        <h4>Sales Summary</h4>
+        <input type="date" class="form-control w-auto"
+               value="<?= htmlspecialchars($date) ?>"
+               onchange="location.href='admin_revenue_sales.php?date='+this.value+'&period='+<?= $period ?>;">
+      </div>
+
+      <!-- Summary Cards -->
+      <div class="row row-cols-1 row-cols-md-4 g-4 mb-5">
+        <div class="col">
+          <div class="card summary-card h-100 p-3 bg-warning-subtle d-flex flex-column justify-content-center">
+            <div class="d-flex align-items-center mb-2">
+              <i class="fas fa-coins text-warning me-3"></i><h6 class="mb-0">Total Sales</h6>
+            </div>
+            <h4 class="flex-grow-1"><?= number_format($totalSales,0,',','.') ?>₫</h4>
+            <small class="text-success">+8% from yesterday</small>
+          </div>
+        </div>
+        <div class="col">
+          <div class="card summary-card h-100 p-3 bg-warning text-white d-flex flex-column justify-content-center">
+            <div class="d-flex align-items-center mb-2">
+              <i class="fas fa-utensils me-3"></i><h6 class="mb-0">Dishes Sold</h6>
+            </div>
+            <h4 class="flex-grow-1"><?= $dishesSold ?></h4>
+            <small>+12% from yesterday</small>
+          </div>
+        </div>
+        <div class="col">
+          <div class="card summary-card h-100 p-3 bg-white d-flex flex-column justify-content-center">
+            <div class="d-flex align-items-center mb-2">
+              <i class="fas fa-receipt text-primary me-3"></i><h6 class="mb-0">Total Orders</h6>
+            </div>
+            <h4 class="flex-grow-1"><?= $totalOrders ?></h4>
+            <small class="text-success">+5% from yesterday</small>
+          </div>
+        </div>
+        <div class="col">
+          <div class="card summary-card h-100 p-3 bg-white d-flex flex-column justify-content-center">
+            <div class="d-flex align-items-center mb-2">
+              <i class="fas fa-user-plus text-secondary me-3"></i><h6 class="mb-0">New Customers</h6>
+            </div>
+            <h4 class="flex-grow-1"><?= $newCustomers ?></h4>
+            <small>+0.5% from yesterday</small>
+          </div>
         </div>
       </div>
-    </div>
-  <?php endforeach; ?>
-</div>
 
-<!-- Charts -->
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h5>Analysis</h5>
-</div>
-<canvas id="salesChart" height="120"></canvas>
-
-<!-- Recent Transactions -->
-<div class="row gy-4 mt-5">
-  <div class="col-lg-6">
-    <h5>Recent Transactions</h5>
-    <table class="table">
-      <thead><tr><th>Customer</th><th class="text-end">Amount</th></tr></thead>
-      <tbody>
-        <?php foreach($recent as $t): ?>
-          <tr>
-            <td><?= htmlspecialchars($t['customer_name']) ?></td>
-            <td class="text-end"><?= number_format($t['total_amount'],0,',','.') ?> ₫</td>
-          </tr>
-        <?php endforeach; ?>
-      </tbody>
-    </table>
-  </div>
-  <div class="col-lg-6">
-    <h5>Weekly Sales</h5>
-    <canvas id="weeklyChart" height="220"></canvas>
-  </div>
-</div>
-
-<!-- Detail Modal -->
-<div class="modal fade" id="detailModal" tabindex="-1">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="detailTitle"></h5>
-        <button class="btn-close" data-bs-dismiss="modal"></button>
+      <!-- Charts Row -->
+      <div class="row">
+        <div class="col-md-8 mb-4">
+          <div class="card p-3 h-100">
+            <div class="d-flex justify-content-between mb-2">
+              <h6>Analysis (Last <?= $period ?> Days)</h6>
+              <select class="form-select w-auto"
+                      onchange="location.href='admin_revenue_sales.php?date=<?= $date ?>&period='+this.value;">
+                <?php foreach ([7,30,90] as $p): ?>
+                  <option value="<?= $p ?>" <?= $p===$period?'selected':'' ?>><?= $p ?> days</option>
+                <?php endforeach; ?>
+              </select>
+            </div>
+            <canvas id="analysisChart" height="150"></canvas>
+          </div>
+        </div>
+        <div class="col-md-4 mb-4">
+          <div class="card p-3 text-center h-100">
+            <h6>Weekly Sales</h6>
+            <h3><?= number_format(array_sum($weeklyData),0,',','.') ?>₫</h3>
+            <canvas id="weeklyChart" height="120"></canvas>
+          </div>
+        </div>
       </div>
-      <div class="modal-body" id="detailContent"></div>
-    </div>
+
+      <!-- Profitability -->
+      <h4>Profitability</h4>
+      <small class="text-muted">Total Net Profit &amp; Income</small>
+      <div class="card profit-card p-4 mb-5">
+        <div class="profit-balance">
+          <div>
+            <small>Total Balance</small>
+            <h3><?= number_format(array_sum($weeklyData),0,',','.') ?>₫</h3>
+          </div>
+          <canvas id="profitSparkline" width="60" height="30"></canvas>
+        </div>
+        <div class="net-profit">
+          <i class="fas fa-chart-line text-success"></i>
+          <div>
+            <div class="value"><?= number_format(array_sum($weeklyData)*0.03,2,',','.') ?>₫</div>
+            <small>Today, <?= date('H:i') ?></small>
+          </div>
+        </div>
+      </div>
+
+      <!-- Customer Insights & Peak Hour -->
+      <div class="row mb-5">
+        <div class="col-md-6 mb-4">
+          <h6>Customer Insights</h6>
+          <div class="card p-3 h-100"><canvas id="customerInsightsChart" height="200"></canvas></div>
+        </div>
+        <div class="col-md-6 mb-4">
+          <h6>Peak Hour (<?= $date ?>)</h6>
+          <div class="card p-3 h-100"><canvas id="peakHourChart" height="200"></canvas></div>
+        </div>
+      </div>
+
+      <!-- Recently Orders + View All -->
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h5>Recently Orders</h5>
+    <a href="admin.php?page=orders&date=<?= htmlspecialchars($date) ?>" class="btn btn-link">
+      View All
+    </a>
+  </div>
+      <div class="card p-3 mb-5">
+        <table class="table mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Number</th><th>Customer</th><th>Date</th><th class="text-end">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php while($r = $recent->fetch_assoc()): ?>
+            <tr>
+              <td><?= $r['id'] ?></td>
+              <td><?= htmlspecialchars($r['customer_name']) ?></td>
+              <td><?= date('Y-m-d H:i:s',strtotime($r['created_at'])) ?></td>
+              <td class="text-end"><?= number_format($r['total_amount'],0,',','.') ?>₫</td>
+            </tr>
+            <?php endwhile; ?>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Modal -->
+      <div class="modal fade" id="ordersModal" tabindex="-1" aria-labelledby="ordersModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title" id="ordersModalLabel">Orders for <?= htmlspecialchars($date) ?></h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="ordersModalBody">
+              <div class="text-center py-5">
+                <div class="spinner-border text-primary"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
   </div>
 </div>
 
-<!-- JS: Chart.js and Detail AJAX -->
+<!-- Chart.js & Bootstrap JS -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
-  // Main chart
-  new Chart(document.getElementById('salesChart'), {
-    type: 'line',
-    data: {
-      labels: <?= json_encode($labels) ?>,
-      datasets: [
-        { label:'Last Period', data:<?= json_encode($data_prev) ?>, borderDash:[5,5], fill:false },
-        { label:'This Period', data:<?= json_encode($data_cur) ?>, fill:false, tension:0.4 }
-      ]
-    },
-    options: { scales:{ y:{ beginAtZero:true }}, plugins:{ legend:{ position:'bottom' }} }
-  });
-  // Secondary chart
-  new Chart(document.getElementById('weeklyChart'), {
-    type:'line',
-    data:{ labels: <?= json_encode($labels) ?>, datasets:[{ data:<?= json_encode($data_cur) ?>, fill:true, tension:0.4 }] },
-    options:{ scales:{ y:{ display:false }}, plugins:{ legend:{ display:false }} }
-  });
+// Analysis Chart
+new Chart(document.getElementById('analysisChart'), {
+  type:'line',
+  data:{ labels:<?= json_encode($labels) ?>, datasets:[
+    { label:'Prev', data:<?= json_encode($dataPrev) ?>, borderDash:[5,5], fill:false, tension:.4 },
+    { label:'Cur',  data:<?= json_encode($dataCur) ?>,  fill:false, tension:.4 }
+  ]},
+  options:{ responsive:true, plugins:{ legend:{ position:'bottom' }} }
+});
+// Weekly Area
+new Chart(document.getElementById('weeklyChart'), {
+  type:'line',
+  data:{ labels:<?= json_encode($labels) ?>, datasets:[{
+      data:<?= json_encode($weeklyData) ?>, fill:true, tension:.4, borderWidth:0
+  }]},
+  options:{ responsive:true, scales:{ x:{display:false},y:{display:false} }, plugins:{ legend:{display:false} }}
+});
+// Profit Sparkline
+new Chart(document.getElementById('profitSparkline'), {
+  type:'line',
+  data:{ datasets:[{ data:<?= json_encode($weeklyData) ?>, borderColor:'#2E7D32', pointRadius:0, tension:.4 }]},
+  options:{ responsive:false, plugins:{ legend:{display:false} }, scales:{ x:{display:false},y:{display:false} }}
+});
+// Peak Hour
+new Chart(document.getElementById('peakHourChart'), {
+  type:'bar',
+  data:{ labels:<?= json_encode($peakLabels) ?>, datasets:[{ data:<?= json_encode($peakValues) ?>, borderRadius:5 }]},
+  options:{ responsive:true, plugins:{ legend:{display:false} }}
+});
+// Customer Insights
+new Chart(document.getElementById('customerInsightsChart'), {
+  type:'line',
+  data:{ labels:<?= json_encode($ciLabels) ?>, datasets:[
+    { label:'Loyal',  data:<?= json_encode($ciLoyal) ?>,  fill:false, tension:.4 },
+    { label:'New',    data:<?= json_encode($ciNew) ?>,    fill:false, tension:.4 },
+    { label:'Unique', data:<?= json_encode($ciUnique) ?>, fill:false, tension:.4 }
+  ]},
+  options:{ responsive:true }
+});
 
-  // Show detail in modal
-  function showDetail(key) {
-    const date = document.querySelector("input[name='date']").value;
-    const titles = { sales:'All Invoices', dishes:'Dishes Sold', orders:'Invoice List', new:'New Customers' };
-    document.getElementById('detailTitle').innerText = titles[key]||'Details';
-    document.getElementById('detailContent').innerHTML = '<div class="text-center py-5 text-muted">Loading…</div>';
-    fetch(`admin_revenue_sales.php?date=${date}&detail=${key}`, { credentials:'same-origin' })
-      .then(r=>r.text()).then(html=>document.getElementById('detailContent').innerHTML=html);
-  }
+
 </script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -1,118 +1,125 @@
 <?php
-// admin_orders.php – phần module, đã session_start() và include db.php ở admin.php
 
-// Bảo vệ trang
+include 'db.php';
+
+// 1) Bảo vệ trang
 if (empty($_SESSION['admin_logged_in'])) {
     header('Location: login.php');
-    exit();
+    exit;
 }
 
-// --- 1) Phân trang ---
-$pageSize = 10;
-$page     = max(1, intval($_GET['pg'] ?? 1));
-$offset   = ($page - 1) * $pageSize;
+// 2) Ngày (mặc định hôm nay)
+$date = $_GET['date'] ?? date('Y-m-d');
 
-// Đếm tổng số “orders” (tức invoices)
-$resCount    = $conn->query("SELECT COUNT(*) FROM invoices");
-$totalOrders = (int)$resCount->fetch_row()[0];
-$totalPages  = ceil($totalOrders / $pageSize);
-
-// --- 2) Lấy danh sách invoices ---
+// 3) Lấy 20 đơn gần nhất
 $stmt = $conn->prepare("
-  SELECT id, customer_name, customer_email, created_at, total_amount
+  SELECT id, customer_name, customer_email, total_amount, created_at
   FROM invoices
+  WHERE DATE(created_at)=?
   ORDER BY created_at DESC
-  LIMIT ? OFFSET ?
+  LIMIT 20
 ");
-$stmt->bind_param("ii", $pageSize, $offset);
+$stmt->bind_param("s", $date);
 $stmt->execute();
-$res_orders = $stmt->get_result();
+$orders = $stmt->get_result();
+$stmt->close();
 ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>All Orders | ShinHot Pot</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <!-- Font & Icon & Bootstrap -->
+  <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Nunito', sans-serif;
+      background: #f8f9fa;
+    }
+    .content-wrapper {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 2rem 1rem;
+    }
+    .btn-back {
+      margin-left: .5rem;
+    }
+  </style>
+</head>
+<body>
 
-<h2 id="orders">Orders Management</h2>
+  <div class="content-wrapper">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <h4 class="mb-0">Recently Orders</h4>
+      <input
+        type="date"
+        class="form-control w-auto"
+        value="<?= htmlspecialchars($date) ?>"
+        onchange="location.href='admin_orders.php?date='+this.value;"
+      >
+    </div>
 
-<table class="table table-striped table-hover">
-  <thead class="table-dark">
-    <tr>
-      <th>#</th>
-      <th>Customer</th>
-      <th>Email</th>
-      <th>Date</th>
-      <th class="text-end">Total</th>
-      <th>Details</th>
-    </tr>
-  </thead>
-  <tbody id="orders-accordion">
-    <?php while ($o = $res_orders->fetch_assoc()): ?>
-    <tr>
-      <td><?= $o['id'] ?></td>
-      <td><?= htmlspecialchars($o['customer_name']) ?></td>
-      <td><?= htmlspecialchars($o['customer_email']) ?></td>
-      <td><?= $o['created_at'] ?></td>
-      <td class="text-end"><?= number_format($o['total_amount'],0,',','.') ?> ₫</td>
-      <td>
-        <button class="btn btn-sm btn-info"
-                data-bs-toggle="collapse"
-                data-bs-target="#details-<?= $o['id'] ?>"
-                aria-expanded="false">
-          View
-        </button>
-      </td>
-    </tr>
-    <tr>
-      <td colspan="6" class="p-0 border-0">
-        <div id="details-<?= $o['id'] ?>"
-             class="collapse"
-             data-bs-parent="#orders-accordion">
-          <table class="table mb-0">
-            <thead>
+    <!-- Orders Table -->
+    <div class="card shadow-sm mb-4">
+      <div class="table-responsive">
+        <table class="table table-hover mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Number</th>
+              <th>Customer</th>
+              <th>Email</th>
+              <th class="text-end">Total</th>
+              <th>Date</th>
+              <th>Status</th>
+              <th>Checking</th>
+            </tr>
+          </thead>
+          <tbody>
+          <?php if ($orders->num_rows === 0): ?>
+            <tr>
+              <td colspan="7" class="text-center py-4">No orders found.</td>
+            </tr>
+          <?php else: ?>
+            <?php while ($r = $orders->fetch_assoc()): ?>
               <tr>
-                <th>Dish</th><th>Qty</th><th class="text-end">Unit Price</th><th class="text-end">Line Total</th>
-              </tr>
-            </thead>
-            <tbody>
-            <?php
-              $stmt2 = $conn->prepare("
-                SELECT i.name, ii.quantity, ii.price
-                FROM invoice_items ii
-                JOIN items i ON ii.item_id = i.id
-                WHERE ii.invoice_id = ?
-              ");
-              $stmt2->bind_param("i", $o['id']);
-              $stmt2->execute();
-              $items = $stmt2->get_result();
-              while ($it = $items->fetch_assoc()):
-                $lineTotal = $it['quantity'] * $it['price'];
-            ?>
-              <tr>
-                <td><?= htmlspecialchars($it['name']) ?></td>
-                <td><?= intval($it['quantity']) ?></td>
-                <td class="text-end"><?= number_format($it['price'],0,',','.') ?> ₫</td>
-                <td class="text-end"><?= number_format($lineTotal,0,',','.') ?> ₫</td>
+                <td><?= $r['id'] ?></td>
+                <td><?= htmlspecialchars($r['customer_name']) ?></td>
+                <td><?= htmlspecialchars($r['customer_email']) ?></td>
+                <td class="text-end"><?= number_format($r['total_amount'],0,',','.') ?>₫</td>
+                <td><?= date('Y-m-d H:i:s', strtotime($r['created_at'])) ?></td>
+                <td><?= htmlspecialchars($r['status'] ?? 'Done') ?></td>
+                <td>
+                  <a
+                    href="admin.php?page=order_detail&detail=order&id=<?= $r['id'] ?>"
+                    class="btn btn-sm btn-outline-secondary"
+                  >
+                    <i class="fa fa-chevron-down"></i> View
+                  </a>
+                </td>
               </tr>
             <?php endwhile; ?>
-            </tbody>
-          </table>
-        </div>
-      </td>
-    </tr>
-    <?php endwhile; ?>
-  </tbody>
-</table>
+          <?php endif; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
 
-<!-- Pagination -->
-<nav aria-label="Orders pagination">
-  <ul class="pagination justify-content-center">
-    <li class="page-item <?= $page<=1?'disabled':'' ?>">
-      <a class="page-link" href="?page=orders&pg=<?= $page-1 ?>">Previous</a>
-    </li>
-    <?php for($p=1; $p<=$totalPages; $p++): ?>
-      <li class="page-item <?= $p===$page?'active':'' ?>">
-        <a class="page-link" href="?page=orders&pg=<?= $p ?>"><?= $p ?></a>
-      </li>
-    <?php endfor; ?>
-    <li class="page-item <?= $page>=$totalPages?'disabled':'' ?>">
-      <a class="page-link" href="?page=orders&pg=<?= $page+1 ?>">Next</a>
-    </li>
-  </ul>
-</nav>
+    <!-- Controls -->
+    <div class="d-flex justify-content-center mb-5">
+      <button id="btnLoadMore" class="btn btn-outline-primary">Load More</button>
+      <a href="admin_revenue_sales.php" class="btn btn-outline-secondary btn-back">Back</a>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    document.getElementById('btnLoadMore').addEventListener('click', () => {
+      alert('Load thêm đơn hàng…');
+    });
+  </script>
+</body>
+</html>

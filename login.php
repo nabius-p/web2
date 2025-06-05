@@ -15,6 +15,10 @@ if (!empty($_SESSION['admin_logged_in'])) {
     header('Location: admin.php');
     exit();
 }
+if (!empty($_SESSION['staff_logged_in'])) {
+    header('Location: staff_view.php');
+    exit();
+}
 
 $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -29,16 +33,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $result = $stmt->get_result();
         // Nếu tìm thấy user
         if ($row = $result->fetch_assoc()) {
-            // Vì database đang lưu password dạng plaintext, so sánh trực tiếp
-            if ($pass === $row['password'] && $row['role'] === 'admin') {
-                // Đăng nhập thành công
-                $_SESSION['admin_logged_in'] = true;
-                $_SESSION['admin_user']      = $user;
-                $_SESSION['admin_id']        = $row['id'];
-                header('Location: admin.php');
-                exit();
+            // So sánh password (nếu đang lưu plaintext)
+            if ($pass === $row['password']) {
+                if ($row['role'] === 'admin') {
+                    $_SESSION['admin_logged_in'] = true;
+                    $_SESSION['admin_user']      = $user;
+                    $_SESSION['admin_id']        = $row['id'];
+                    header('Location: admin.php');
+                    exit();
+                } elseif ($row['role'] === 'staff') {
+                    $_SESSION['staff_logged_in'] = true;
+                    $_SESSION['staff_user']      = $user;
+                    $_SESSION['staff_id']        = $row['id'];
+                    header('Location: staff_view.php');
+                    exit();
+                } else {
+                    $error = 'Bạn không có quyền truy cập.';
+                }
             } else {
-                $error = 'Tên đăng nhập hoặc mật khẩu không đúng, hoặc bạn không có quyền admin.';
+                $error = 'Tên đăng nhập hoặc mật khẩu không đúng.';
             }
         } else {
             $error = 'Tên đăng nhập hoặc mật khẩu không đúng.';

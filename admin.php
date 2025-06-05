@@ -134,7 +134,7 @@ if (($_GET['page'] ?? '') === 'orders') {
 
 // 2. Xác định module con cần include
 $page    = $_GET['page'] ?? 'revenue_sales';
-$allowed = ['revenue_sales','revenue_customers','revenue_topsold','inventory','orders'];
+$allowed = ['revenue_sales','revenue_customers','revenue_topsold','inventory','orders','revenue_customer_detail', 'revenue_customer_voucher'];
 if (!in_array($page, $allowed)) {
     $page = 'revenue_sales';
 }
@@ -181,88 +181,50 @@ if (!in_array($page, $allowed)) {
 <body>
 
 <div class="container-fluid">
-  <div class="row">
-    <!-- Sidebar -->
-    <nav class="col-2 sidebar d-flex flex-column">
-      <a href="admin.php" class="logo">ShinHot Pot</a>
-      <hr>
-      <h6 class="px-3 text-uppercase text-muted">Operations</h6>
-      <ul class="nav flex-column mb-4">
-        <li class="nav-item">
-          <a class="nav-link <?= ($page==='revenue_sales')?'active':''?>"
-             href="admin.php?page=revenue_sales">
-            <i class="fas fa-chart-line me-2"></i>Sales
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link <?= ($page==='revenue_customers')?'active':''?>"
-             href="admin.php?page=revenue_customers">
-            <i class="fas fa-user-friends me-2"></i>Customers
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link <?= ($page==='revenue_topsold')?'active':''?>"
-             href="admin.php?page=revenue_topsold">
-            <i class="fas fa-fire me-2"></i>Top Sold
-          </a>
-        </li>
-      </ul>
-
-      <h6 class="px-3 text-uppercase text-muted">Inventory</h6>
-      <ul class="nav flex-column mb-4">
-        <li class="nav-item">
-          <a class="nav-link <?= ($page==='inventory')?'active':''?>"
-             href="admin.php?page=inventory">
-            <i class="fas fa-boxes me-2"></i>Inventory Checking
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="admin.php?page=category">
-            <i class="fas fa-list-alt me-2"></i>Category
-          </a>
-        </li>
-        <li class="nav-item">
-          <a class="nav-link" href="admin.php?page=add_item">
-            <i class="fas fa-plus-circle me-2"></i>Add New Items
-          </a>
-        </li>
-      </ul>
-
-      <h6 class="px-3 text-uppercase text-muted">Table</h6>
-      <ul class="nav flex-column mb-4">
-        <li class="nav-item">
-          <a class="nav-link" href="admin.php?page=table_list">
-            <i class="fas fa-table me-2"></i>Table List
-          </a>
-        </li>
-      </ul>
-
-      <div class="mt-auto px-3">
-        <a class="nav-link text-danger" href="logout.php">
-          <i class="fas fa-sign-out-alt me-2"></i>Logout
-        </a>
-      </div>
-    </nav>
+  <div class="row g-0">
+    <?php
+      // Đảm bảo session_start() đã gọi trước đó
+      include __DIR__ . '/sidebar.php';
+    ?>
 
     <!-- Main content -->
     <main class="col-10 content">
       <?php
         switch($page) {
+          case 'revenue_customers': 
+            include 'admin_revenue_customers.php'; 
+            break;
+          case 'revenue_sales': 
+            include 'admin_revenue_sales.php'; 
+            break;
+          case 'revenue_customer_detail': 
+            include 'admin_rvn_cus_detail.php'; 
+            break;
+          case 'revenue_customer_voucher': 
+            include 'admin_rvn_cust_voucher.php'; 
+            break;
+          case 'revenue_topsold': 
+            include 'admin_revenue_topsold.php'; 
+            break;
+          case 'inventory': 
+            include 'admin_inventory.php'; 
+            break;
+          case 'category': 
+            include 'admin_category.php'; 
+            break;
+          case 'add_item': 
+            include 'admin_add_item.php'; 
+            break;
+          case 'table_list': 
+            include 'admin_table_list.php'; 
+            break;
+          case 'order_detail':
+            include 'order_detail.php';
+            break;
           case 'orders':
             include 'admin_orders.php';
             break;
-          case 'inventory':
-            include 'admin_inventory.php';
-            break;
-          case 'revenue_customers':
-            include 'admin_revenue_customers.php';
-            break;
-          case 'revenue_topsold':
-            include 'admin_revenue_topsold.php';
-            break;
-          default:
-            include 'admin_revenue_sales.php';
-            break;
+          default: include 'admin_dashboard.php'; break;
         }
       ?>
     </main>
